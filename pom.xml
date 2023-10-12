@@ -77,6 +77,14 @@
             <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+<!--        Temporary for the WsClient -->
+        <dependency>
+            <groupId>com.typesafe.play</groupId>
+            <artifactId>play-ws_2.13</artifactId> <!-- Adjust the Scala version to match your project -->
+            <version>2.8.7</version> <!-- Adjust the version to match your desired Play version -->
+        </dependency>
+
     </dependencies>
 
     <build>

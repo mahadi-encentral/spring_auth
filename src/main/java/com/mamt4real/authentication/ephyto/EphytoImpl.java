@@ -1,15 +1,15 @@
 package com.mamt4real.authentication.ephyto;
-
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.mamt4real.authentication.ephyto.config.EnvironmentVariables;
 import com.mamt4real.authentication.ephyto.exceptions.*;
 import com.mamt4real.authentication.ephyto.responses.BillInfoResponse;
 import com.mamt4real.authentication.ephyto.responses.MessageResponse;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.HttpStatusCode;
-import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Mono;
+
+import play.libs.Json;
+import play.libs.ws.WSClient;
+import play.libs.ws.WSRequest;
+import play.libs.ws.WSResponse;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -24,10 +24,17 @@ import java.util.Optional;
 @Service
 public class EphytoImpl implements IEphyto {
 
-    private final WebClient ephytoWebClient;
+    private final WSClient wsClient;
 
-    public EphytoImpl(@Qualifier("ephytoWebClient") WebClient ephytoWebClient) {
-        this.ephytoWebClient = ephytoWebClient;
+    private WSRequest getRequest(String url) {
+//        Replace with the actual base Url
+        return wsClient.url(String.format("https://jo-uat.ephytoexchange.org/gens/api/systems/billing/%s",url))
+                .addHeader("secret", EnvironmentVariables.EPHYTO_SECRET)
+                .addHeader("client_id", EnvironmentVariables.EPHYTO_CLIENT_ID);
+    }
+
+    public EphytoImpl(WSClient wsClient) {
+        this.wsClient = wsClient;
     }
 
     @Override
@@ -38,23 +45,20 @@ public class EphytoImpl implements IEphyto {
     @Override
     public Optional<BillInfoResponse> getBillInfo(String billNumber, String paymentTransaction) throws BillNotFoundException, UnauthorizedException {
         String url = String.format("getInfo/%s?%s", billNumber, paymentTransaction == null ? "" : "paymentTransaction=" + paymentTransaction);
-        return ephytoWebClient.get()
-                .uri(url)
-                .retrieve()
-                .onStatus(
-                        HttpStatusCode::is4xxClientError,
-                        clientResponse -> {
-                            if (clientResponse.statusCode().is4xxClientError()) {
-                                if (clientResponse.statusCode().equals(HttpStatus.NOT_FOUND)) {
-                                    return Mono.error(new BillNotFoundException());
-                                } else if (clientResponse.statusCode().equals(HttpStatus.UNAUTHORIZED)) {
-                                    return Mono.error(new UnauthorizedException());
-                                }
-                            }
-                            return Mono.error(new EphytoCustomException("Error Retrieving Bill info", clientResponse.statusCode().value()));
-                        }
-                )
-                .bodyToMono(BillInfoResponse.class).blockOptional();
+
+        WSResponse response =
+                getRequest(url).get().toCompletableFuture().join();
+
+        if (response.getStatus() == 200) {
+            return Optional.ofNullable(Json.fromJson(response.asJson(), BillInfoResponse.class));
+        } else if (response.getStatus() == 406) {
+            throw new BillNotFoundException();
+        } else if (response.getStatus() == 401) {
+            throw new UnauthorizedException();
+        } else {
+            throw new EphytoCustomException("Error Retrieving Bill info", response.getStatus());
+        }
+
     }
 
     @Override
@@ -87,23 +91,18 @@ public class EphytoImpl implements IEphyto {
     @Override
     public MessageResponse confirmBillPayment(String billNumber, String paymentTransaction) throws BillAlreadyConfirmedException, UnauthorizedException {
         String url = String.format("confirmPayment/%s?%s", billNumber, paymentTransaction == null ? "" : "paymentTransaction=" + paymentTransaction);
-        return ephytoWebClient.get()
-                .uri(url)
-                .retrieve()
-                .onStatus(
-                        HttpStatusCode::is4xxClientError,
-                        clientResponse -> {
-                            if (clientResponse.statusCode().is4xxClientError()) {
-                                if (clientResponse.statusCode().equals(HttpStatus.NOT_ACCEPTABLE)) {
-                                    return Mono.error(new BillAlreadyConfirmedException());
-                                } else if (clientResponse.statusCode().equals(HttpStatus.UNAUTHORIZED)) {
-                                    return Mono.error(new UnauthorizedException());
-                                }
-                            }
-                            return Mono.error(new EphytoCustomException("Error Confirming Bill", clientResponse.statusCode().value()));
-                        }
-                )
-                .bodyToMono(MessageResponse.class).block();
+        WSResponse response =
+                getRequest(url).get().toCompletableFuture().join();
+        if (response.getStatus() == 200) {
+            return Json.fromJson(response.asJson(), MessageResponse.class);
+        } else if (response.getStatus() == 406) {
+            throw new BillAlreadyConfirmedException();
+        } else if (response.getStatus() == 401) {
+            throw new UnauthorizedException();
+        } else {
+            throw new EphytoCustomException("Error Confirming Bill", response.getStatus());
+        }
+
     }
 
     private List<BillInfoResponse> _getPendingBills(String url, LocalDate dateFrom, LocalDate dateTo) throws NoPendingBillsException, UnauthorizedException {
@@ -113,23 +112,19 @@ public class EphytoImpl implements IEphyto {
                     url, dateFrom.format(DateTimeFormatter.ofPattern("dd-MM-yyyy")), dateTo.format(DateTimeFormatter.ofPattern("dd-MM-yyyy"))
             );
         }
-        return ephytoWebClient.get()
-                .uri(url)
-                .retrieve()
-                .onStatus(
-                        HttpStatusCode::is4xxClientError,
-                        clientResponse -> {
-                            if (clientResponse.statusCode().is4xxClientError()) {
-                                if (clientResponse.statusCode().equals(HttpStatus.NOT_ACCEPTABLE)) {
-                                    return Mono.error(new NoPendingBillsException());
-                                } else if (clientResponse.statusCode().equals(HttpStatus.UNAUTHORIZED)) {
-                                    return Mono.error(new UnauthorizedException());
-                                }
-                            }
-                            return Mono.error(new EphytoCustomException("Error Retrieving Pending Bills", clientResponse.statusCode().value()));
-                        }
-                )
-                .bodyToFlux(BillInfoResponse.class).collectList().block();
+        WSResponse response =
+                getRequest(url).get().toCompletableFuture().join();
+        if (response.getStatus() == 200) {
+            return Json.mapper().convertValue(response.asJson(), new TypeReference<List<BillInfoResponse>>(){});
+        } else if (response.getStatus() == 406) {
+            throw new NoPendingBillsException();
+        } else if (response.getStatus() == 401) {
+            throw new UnauthorizedException();
+        } else {
+            throw new EphytoCustomException("Error Retrieving Pending Bills", response.getStatus());
+        }
+
     }
 
 }
+
